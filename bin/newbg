@@ -316,9 +316,9 @@ Darken the current wallpaper. The default adjustment is 10, but can
 be set. Your adjustment will be saved and applied when the wallpaper is
 picked again.
 
-=head2 C<--brighten[=adjustment]>
+=head2 C<--lighten[=adjustment]>
 
-Brighten the current wallpaper (as above).
+Lighten the current wallpaper (as above).
 
 =head2 C<-n>, C<--no-stats>
 
