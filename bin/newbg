@@ -1,0 +1,388 @@
+#!/usr/bin/perl
+# POD after __END__
+
+use strict;
+use warnings;
+
+our $VERSION = 0.2;
+
+use Cwd;
+use Digest::SHA;
+use File::Basename qw(basename);
+use File::Find;
+use File::Temp;
+use File::HomeDir;
+use File::Slurp qw(read_file);
+use File::Spec::Functions qw(catfile catdir);
+use Getopt::Long;
+use Image::Magick;
+use Readonly;
+use Time::Duration qw(ago concise);
+use Try::Tiny;
+use X11::Wallpaper qw(set_wallpaper);
+use YAML;
+
+# Lazy pod2usage to speed up loading
+sub pod2usage { require Pod::Usage; goto &Pod::Usage::pod2usage }
+
+Readonly my $DEFAULT_CONFIG_FILE => catfile(File::HomeDir->my_home, '.newbg');
+Readonly my $PROG => basename($0);
+Readonly my $MAX_HISTORY => 10;
+Readonly my $DEFAULT_BRIGHT_ADJUST => 10;
+
+my ($subdir, $subdir_relative, $verbose, $no_stats, $bright_adjust);
+my ($list, $current, $history, $restore);
+my $config_path = def($ENV{NEWBG_CONFIG}, $DEFAULT_CONFIG_FILE);
+Getopt::Long::Configure(qw(no_ignore_case bundling));
+GetOptions(
+    'config=s'       => \$config_path,
+    'd|dir=s'        => \$subdir,
+    'D=s'            => \$subdir_relative,
+    'l|list'         => \$list,
+    'c|current'      => \$current,
+    'H|history'      => \$history,
+    'v|verbose'      => \$verbose,
+    'n|no-stats'     => \$no_stats,
+    'r|restore'      => \$restore,
+    'lighten:i'      => sub { $bright_adjust = $_[1] || $DEFAULT_BRIGHT_ADJUST },
+    'darken:i'       => sub { $bright_adjust = -1 * ($_[1] || $DEFAULT_BRIGHT_ADJUST) },
+    'h|help|?'       => sub { pod2usage(1) },
+    'usage'          => sub { pod2usage({-verbose => 0}) },
+    'man|perldoc'    => sub { pod2usage({-verbose => 2}) },
+) or pod2usage(1);
+
+my @keywords = @ARGV;
+
+pod2usage('Cannot specify both -d and -D')
+    if defined $subdir && defined $subdir_relative;
+
+if (defined $subdir_relative) {
+    $subdir = $subdir_relative;
+    $subdir_relative = 1;
+}
+
+my $conf;
+try {
+    $conf = YAML::LoadFile($config_path);
+    defined $conf->{root} or die "Please add root dir to your config!\n";
+}
+catch {
+    pod2usage("Please create a config file as described below") if /^No such file/;
+    pod2usage($_) if /^Please add a root dir/;
+    die $_;
+};
+
+my $dir = defined $subdir && $subdir =~ m{^/} ? $subdir
+        : defined $subdir_relative            ? catdir(getcwd(), $subdir)
+                                              : catdir($conf->{root}, $subdir)
+                                              ;
+my @images = search_dir($dir, @keywords);
+
+if ($list) {
+    print "$_\n" for sort @images;
+}
+elsif ($current) {
+    if (exists $conf->{current}) {
+        print $conf->{current}{path}, "\n";
+    }
+    else {
+        warn "No wallpaper set.\n" if $verbose;
+    }
+}
+elsif ($history) {
+    if (exists $conf->{history}) {
+        my $i = 0;
+        for my $wp (@{$conf->{history}}) {
+            printf "%d. %s (%s)\n", ++$i, $wp->{path}, concise(ago(time - $wp->{ts}));
+        }
+    }
+    else {
+        warn "No history.\n" if $verbose;
+    }
+}
+else {
+    my ($image, $hash);
+    if (defined $bright_adjust) {
+        pod2usage("--darken/--lighten require a previously-set wallpaper")
+            if !exists $conf->{current};
+        ($image, $hash) = @{$conf->{current}}{qw(path hash)};
+        $conf->{data}{$hash}{brightness_adjust} += $bright_adjust;
+        warn "Adjustment for '$image' is now " . $conf->{data}{$hash}{brightness_adjust} . "\n"
+            if $verbose;
+    }
+    elsif ($restore && defined $conf->{current}{path} && -f $conf->{current}{path}) {
+        ($image, $hash) = @{$conf->{current}}{qw(path hash)};
+    }
+    else {
+        $image = pick_next_image($conf, @images);
+        if (!defined $image) {
+            warn "No matching images!\n" if $verbose;
+            goto SAVE;
+        }
+
+        $hash = wallpaper_picked($conf, $image, $verbose, $no_stats);
+    }
+
+    # Auto-adjust: read average brightness and generate adjustment
+    # Also take into account user adjustment
+    my $adj = 100;  # %
+    if (my $brightness = $conf->{brightness}) {
+        my $avg_intensity = do {
+            my $p = Image::Magick->new;
+            $p->Read($image);
+            $p->Get('format', '%[mean]') / (2**16 - 1);
+        };
+        warn "Average intensity of '$image' is $avg_intensity\n" if $verbose;
+        $adj = (0.23 / $avg_intensity) * 100;
+    }
+    if (my $user_adj = $conf->{data}{$hash}{brightness_adjust}) {
+        $adj += $user_adj;
+        warn "User adjustment of $user_adj applied\n" if $verbose;
+    }
+
+    if ($adj != 100) {
+        # Adjust brightness of image
+        warn "Adjustment value is '$adj'\n" if $verbose;
+        $adj = 0 if $adj < 0;
+
+        my $tmp = File::Temp->new;
+        my $p = Image::Magick->new;
+        $p->Read($image);
+        $p->Mogrify('modulate', brightness => $adj);
+        $p->Write($tmp);
+        set_wallpaper($tmp);
+    }
+    else {
+        set_wallpaper($image);
+    }
+    warn $image, "\n" if $verbose;
+}
+
+SAVE:
+YAML::DumpFile($config_path, $conf);
+
+# Given a directory and optional filename keywords, return a list of image
+# filenames that match the criteria.
+sub search_dir {
+    my ($dir, @keywords) = @_;
+    my $is_image_regex = qr/\.(png|jpe?g|gif)$/i;
+    my @images;
+    my $keyword_regex = build_keyword_regex(@keywords);
+
+    find(sub {
+        return unless /$is_image_regex/;
+        return unless /$keyword_regex/;
+
+        push @images, $File::Find::name;
+    }, $dir);
+
+    return @images;
+}
+
+# Return regex to match filename against keywords (case-insensitive).
+# If no keywords supplied, the filename will always match.
+sub build_keyword_regex {
+    my @keywords = @_;
+    if (@keywords) {
+        return '(?i)(?:' . join('', map { quotemeta } @keywords) . ')';
+    }
+    else {
+        return '';
+    }
+}
+
+# Mark wallpaper picked, update config and manage votes.
+sub wallpaper_picked {
+    my ($conf, $path, $verbose, $no_stats) = @_;
+
+    my $prev = $conf->{current};
+    my $cur_ts = time;
+    my $hash = filehash($path);
+    $conf->{current} = {
+        ts   => $cur_ts,
+        path => $path,
+        hash => $hash,
+    };
+    $conf->{history} ||= [];
+    unshift $conf->{history}, $conf->{current};
+    pop $conf->{history} if @{$conf->{history}} > $MAX_HISTORY;
+
+    # Add/remove votes for random picking
+    if (defined $prev && !$no_stats) {
+        my $dur = $cur_ts - $prev->{ts};
+        my $prev_hash = $prev->{hash};
+        if ($dur <= 10) {
+            $conf->{data}{$prev_hash}{bad} ++; 
+            warn "Added bad vote for '$prev->{path}'\n" if $verbose;
+        }
+        elsif ($dur >= 10*60) {
+            $conf->{data}{$prev_hash}{good} ++;
+            warn "Added good vote for '$prev->{path}'\n" if $verbose;
+        }
+    }
+
+    return $hash;
+}
+
+# Pick and return a random item from arguments
+sub pick_next_image {
+    my ($conf, @images) = @_;
+    return pick_random(@images);
+}
+
+sub pick_random {
+    return $_[rand(scalar @_)];
+}
+
+# Compute SHA-1 hash of filename contents
+sub filehash {
+    my $filename = shift;
+    return Digest::SHA->new(1)->addfile($filename)->hexdigest;
+}
+
+# Return first defined item, or nothing.
+sub def {
+    for (@_) {
+        return $_ if defined;
+    }
+    return;
+}
+
+__END__
+
+=head1 NAME
+
+newbg - Set wallpaper like no-one's business
+
+=head1 SYNOPSIS
+
+  newbg [-d|-D subdir] [-v] [-n] [--list] [keywords...]
+
+  echo 'root: /home/user/wallpapers' >> ~/.newbg
+
+  newbg                # random wallpaper
+  newbg -d animals     # random wallpaper from animals subdir
+  newbg dinosaur       # random wallpaper with dinosaur in filename
+
+  # Adjust brightness
+  newbg --darken [10] | --lighten [10]
+
+  # View current wallpaper or history
+  newbg [--current | --history]
+
+  # Restore previous wallpaper on startup
+  newbg -r
+
+=head1 DESCRIPTION
+
+C<newbg> is a simple utility to set the desktop wallpaper.
+Given a directory of wallpaper images, it will pick a random image subject
+to the subdirectory or filename restrictions you provide, and set it as
+background. It keeps track of previously set images and will cycle through
+them to avoid duplicates.
+
+C<newbg> keeps track of how long a wallpaper has been active and will be
+less likely to suggest wallpapers you change after a short amount of time.
+
+Additionally, C<newbg> can normalise the brightness of wallpapers and
+output a history of previously set images.
+
+=head1 OPTIONS
+
+=head2 I<keywords>
+
+Pick wallpapers in which the filename contains at least one of the keywords
+provided. Case-insensitive.
+
+=head2 C<-d>, C<--dir> I<subdir>
+
+Specify the directory in which to look for a wallpaper. This directory is
+assumed to be a sub-directory of the root directory (see above), unless
+it begins with a slash ('/'). 
+
+=head2 C<-D> I<subdir>
+
+As C<-d>, except assume the directory is relative to the current working
+directory if it does not begin with a slash.
+
+=head2 C<-r>, C<--restore>
+
+Restore previously set wallpaper, without counting statistics. This
+is intended for use at startup.
+
+=head2 C<--darken[=adjustment]>
+
+Darken the current wallpaper. The default adjustment is 10, but can
+be set. Your adjustment will be saved and applied when the wallpaper is
+picked again.
+
+=head2 C<--brighten[=adjustment]>
+
+Brighten the current wallpaper (as above).
+
+=head2 C<-n>, C<--no-stats>
+
+Usually C<newbg> will remember if you immedately switch to another
+wallpaper (by re-running the command) or seem to be happy with a
+wallpaper (but not re-running for a while) and factor this into
+future selections. This option disables this behaviour for the current
+invocation.
+
+=head2 C<-l>, C<--list>
+
+List wallpapers that could be picked, but don't set any.
+
+=head2 C<--history>
+
+Show current and previously set wallpapers, with time since they were
+set.
+
+=head2 C<--current>
+
+Print path of current wallpaper.
+
+=head2 C<-v>, C<--verbose>
+
+Output the filename of the selected wallpaper, and some other
+information.
+
+=head2 C<--config> I<path>
+
+Override path to the C<newbg> config file.
+
+=head1 CONFIGURATION
+
+C<newbg>'s configuration is by default stored in C<$HOME/.newbg> in YAML
+format. You can override this via either the C<--config> option or the
+C<NEWBG_CONFIG> environment variable.
+
+The config file is used to store data about previous wallpaper
+selections and user preferences e.g. brightness adjustments. The
+following top-level keys may be set:
+
+=head2 root
+
+Path to the root directory of the user's wallpapers. Required.
+
+=head2 brightness
+
+Target average intensity of pixels in the wallpaper, as a floating
+point number [0,1]. If this config is set, images will have their
+brightness adjusted such that the average intensity becomes this
+value.
+
+=head2 data.$hash
+
+Holds configuration for each wallpaper, by SHA-1 hash of its
+contents. Relevant keys are 'good' (number of good votes), 'bad'
+(number of bad votes) and 'bright_adjust' (user-specified brightness
+adjustment for image).
+
+=head1 AUTHOR
+
+Richard Harris <richardjharris@gmail.com>
+
+=head1 COPRIGHT AND LICENSE
+
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.

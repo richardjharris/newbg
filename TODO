@@ -1,0 +1,16 @@
+* Use good/bad votes in random picking
+  - file hashing may take a long time to calculate, we may want
+    a cached filename -> hash cache?
+
+* Also account for last change time, avoid recently set wallpapers
+  and especially the last one used.
+  - If we're forced to, don't count as a switch.
+
+ * Splitting across multiple monitors
+
+ * newbg --color=red (or similar)
+
+ * refactoring: consider Wallpaper as object
+  - std. routines to get brightness, pick, set
+
+ * profiling

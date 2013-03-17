@@ -1,0 +1,136 @@
+=head1 NAME
+
+newbg - Set wallpaper like no-one's business
+
+=head1 SYNOPSIS
+
+  newbg [-d|-D subdir] [-v] [-n] [--list] [keywords...]
+
+  echo 'root: /home/user/wallpapers' >> ~/.newbg
+
+  newbg                # random wallpaper
+  newbg -d animals     # random wallpaper from animals subdir
+  newbg dinosaur       # random wallpaper with dinosaur in filename
+
+  # Adjust brightness
+  newbg --darken [10] | --lighten [10]
+
+  # View current wallpaper or history
+  newbg [--current | --history]
+
+  # Restore previous wallpaper on startup
+  newbg -r
+
+=head1 DESCRIPTION
+
+C<newbg> is a simple utility to set the desktop wallpaper.
+Given a directory of wallpaper images, it will pick a random image subject
+to the subdirectory or filename restrictions you provide, and set it as
+background. It keeps track of previously set images and will cycle through
+them to avoid duplicates.
+
+C<newbg> keeps track of how long a wallpaper has been active and will be
+less likely to suggest wallpapers you change after a short amount of time.
+
+Additionally, C<newbg> can normalise the brightness of wallpapers and
+output a history of previously set images.
+
+=head1 OPTIONS
+
+=head2 I<keywords>
+
+Pick wallpapers in which the filename contains at least one of the keywords
+provided. Case-insensitive.
+
+=head2 C<-d>, C<--dir> I<subdir>
+
+Specify the directory in which to look for a wallpaper. This directory is
+assumed to be a sub-directory of the root directory (see above), unless
+it begins with a slash ('/'). 
+
+=head2 C<-D> I<subdir>
+
+As C<-d>, except assume the directory is relative to the current working
+directory if it does not begin with a slash.
+
+=head2 C<-r>, C<--restore>
+
+Restore previously set wallpaper, without counting statistics. This
+is intended for use at startup.
+
+=head2 C<--darken[=adjustment]>
+
+Darken the current wallpaper. The default adjustment is 10, but can
+be set. Your adjustment will be saved and applied when the wallpaper is
+picked again.
+
+=head2 C<--brighten[=adjustment]>
+
+Brighten the current wallpaper (as above).
+
+=head2 C<-n>, C<--no-stats>
+
+Usually C<newbg> will remember if you immedately switch to another
+wallpaper (by re-running the command) or seem to be happy with a
+wallpaper (but not re-running for a while) and factor this into
+future selections. This option disables this behaviour for the current
+invocation.
+
+=head2 C<-l>, C<--list>
+
+List wallpapers that could be picked, but don't set any.
+
+=head2 C<--history>
+
+Show current and previously set wallpapers, with time since they were
+set.
+
+=head2 C<--current>
+
+Print path of current wallpaper.
+
+=head2 C<-v>, C<--verbose>
+
+Output the filename of the selected wallpaper, and some other
+information.
+
+=head2 C<--config> I<path>
+
+Override path to the C<newbg> config file.
+
+=head1 CONFIGURATION
+
+C<newbg>'s configuration is by default stored in C<$HOME/.newbg> in YAML
+format. You can override this via either the C<--config> option or the
+C<NEWBG_CONFIG> environment variable.
+
+The config file is used to store data about previous wallpaper
+selections and user preferences e.g. brightness adjustments. The
+following top-level keys may be set:
+
+=head2 root
+
+Path to the root directory of the user's wallpapers. Required.
+
+=head2 brightness
+
+Target average intensity of pixels in the wallpaper, as a floating
+point number [0,1]. If this config is set, images will have their
+brightness adjusted such that the average intensity becomes this
+value.
+
+=head2 data.$hash
+
+Holds configuration for each wallpaper, by SHA-1 hash of its
+contents. Relevant keys are 'good' (number of good votes), 'bad'
+(number of bad votes) and 'bright_adjust' (user-specified brightness
+adjustment for image).
+
+=head1 AUTHOR
+
+Richard Harris <richardjharris@gmail.com>
+
+=head1 COPRIGHT AND LICENSE
+
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.
