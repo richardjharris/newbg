@@ -9,7 +9,7 @@ WriteMakefile1(
             bugtracker => q{https://github.com/richardjharris/newbg/issues},
         },
     },
-    NAME              => q{newbg},
+    NAME              => q{App::newbg},
     AUTHOR            => q{Richard Harris <richardjharris@gmail.com>},
     ABSTRACT          => q{Set wallpaper like no-one's business},
     VERSION_FROM      => q{./bin/newbg},

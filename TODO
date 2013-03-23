@@ -6,11 +6,9 @@
   and especially the last one used.
   - If we're forced to, don't count as a switch.
 
- * Splitting across multiple monitors
+* --newer option to restrict by modified time of wallpapers
 
- * newbg --color=red (or similar)
+* Splitting across multiple monitors
 
- * refactoring: consider Wallpaper as object
-  - std. routines to get brightness, pick, set
+* newbg --color=red (or similar)
 
- * profiling

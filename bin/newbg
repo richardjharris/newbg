@@ -4,7 +4,7 @@
 use strict;
 use warnings;
 
-our $VERSION = 0.2;
+our $VERSION = 0.3;
 
 use Cwd;
 use Digest::SHA;
@@ -49,6 +49,7 @@ GetOptions(
     'h|help|?'       => sub { pod2usage(1) },
     'usage'          => sub { pod2usage({-verbose => 0}) },
     'man|perldoc'    => sub { pod2usage({-verbose => 2}) },
+    'V|version'      => sub { warn "newbg version $VERSION\n"; exit(0) },
 ) or pod2usage(1);
 
 my @keywords = @ARGV;
@@ -67,7 +68,7 @@ try {
     defined $conf->{root} or die "Please add root dir to your config!\n";
 }
 catch {
-    pod2usage("Please create a config file as described below") if /^No such file/;
+    pod2usage("Please create a config file as described below") if /no such file/i;
     pod2usage($_) if /^Please add a root dir/;
     die $_;
 };
